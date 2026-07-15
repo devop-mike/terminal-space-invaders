@@ -68,6 +68,32 @@ static const ColorCode INVADER_ROW_COLOR[ROWS] = {
     COL_INVADER0, COL_INVADER1, COL_INVADER2, COL_INVADER3, COL_INVADER4
 };
 
+/* Glyph codes >= 200 are multi-byte UTF-8 block-graphics; anything below is
+ * used as a literal ASCII character. This lets half-block "pixel" sprites
+ * (invaders, player ship) pack 2 vertical sub-pixels into a single terminal
+ * cell via the upper/lower/full block characters. */
+#define GLYPH_FULL    200
+#define GLYPH_UPPER   201
+#define GLYPH_LOWER   202
+#define GLYPH_PBULLET 203
+#define GLYPH_EBULLET 204
+
+static const char *SPECIAL_GLYPH[5] = {
+    "\xe2\x96\x88", /* full block  █ */
+    "\xe2\x96\x80", /* upper half  ▀ */
+    "\xe2\x96\x84", /* lower half  ▄ */
+    "\xe2\x96\xb2", /* up triangle ▲ (player bullet) */
+    "\xe2\x96\xbc", /* down triangle ▼ (enemy bullet) */
+};
+
+/* 3-wide x 2-(sub)row pixel sprites, packed into one terminal row via
+ * half-block characters. '#' = lit pixel, '.' = empty. */
+#define SPRITE_W 3
+static const char *INVADER_TOP = "#.#";
+static const char *INVADER_BOT = "###";
+static const char *SHIP_TOP    = ".#.";
+static const char *SHIP_BOT    = "###";
+
 static struct termios orig_termios;
 static int raw_mode_active = 0;
 
@@ -144,18 +170,33 @@ typedef struct {
     int alive[SHIELD_H][SHIELD_W];
 } Shield;
 
-static char grid[H][W];
+static unsigned char grid[H][W];
 static unsigned char colorgrid[H][W];
 
-static void plot(int x, int y, char ch, ColorCode col) {
+static void plot(int x, int y, int glyph, ColorCode col) {
     if (x < 0 || x >= W || y < 0 || y >= H) return;
-    grid[y][x] = ch;
+    grid[y][x] = (unsigned char)glyph;
     colorgrid[y][x] = (unsigned char)col;
 }
 
 static int plot_str(int x, int y, const char *s, ColorCode col) {
-    for (; *s; s++, x++) plot(x, y, *s, col);
+    for (; *s; s++, x++) plot(x, y, (unsigned char)*s, col);
     return x;
+}
+
+/* Draws a SPRITE_W-wide sprite (as pat_top/pat_bot half-block pixel rows)
+ * centered on (cx, cy), using one terminal cell's upper/lower half per
+ * column. */
+static void draw_sprite(int cx, int cy, const char *pat_top, const char *pat_bot, ColorCode col) {
+    int half = SPRITE_W / 2;
+    for (int i = 0; i < SPRITE_W; i++) {
+        int top_lit = pat_top[i] != '.';
+        int bot_lit = pat_bot[i] != '.';
+        int x = cx - half + i;
+        if (top_lit && bot_lit) plot(x, cy, GLYPH_FULL, col);
+        else if (top_lit) plot(x, cy, GLYPH_UPPER, col);
+        else if (bot_lit) plot(x, cy, GLYPH_LOWER, col);
+    }
 }
 
 static void invaders_init(Invaders *inv) {
@@ -252,7 +293,7 @@ static void shields_draw(Shield shields[SHIELD_COUNT], int max_cells) {
         for (int r = 0; r < SHIELD_H; r++)
             for (int c = 0; c < SHIELD_W; c++)
                 if (shields[s].alive[r][c])
-                    plot(shields[s].x0 + c, shields[s].y0 + r, '#', col);
+                    plot(shields[s].x0 + c, shields[s].y0 + r, GLYPH_FULL, col);
     }
 }
 
@@ -288,7 +329,9 @@ static void render(int score, int lives) {
                 p += sprintf(outbuf + p, "%s", PALETTE[c]);
                 last_col = c;
             }
-            outbuf[p++] = grid[y][x];
+            unsigned char g = grid[y][x];
+            if (g >= GLYPH_FULL) p += sprintf(outbuf + p, "%s", SPECIAL_GLYPH[g - GLYPH_FULL]);
+            else outbuf[p++] = (char)g;
         }
         p += sprintf(outbuf + p, RESET BORDER_COL "\xe2\x94\x82" RESET "\n");
     }
@@ -418,12 +461,13 @@ int main(void) {
         for (int r = 0; r < ROWS; r++)
             for (int c = 0; c < COLS; c++) {
                 int ix, iy;
-                if (invader_pos(r, c, &inv, &ix, &iy)) plot(ix, iy, 'W', INVADER_ROW_COLOR[r]);
+                if (invader_pos(r, c, &inv, &ix, &iy))
+                    draw_sprite(ix, iy, INVADER_TOP, INVADER_BOT, INVADER_ROW_COLOR[r]);
             }
-        if (pbullet.active) plot(pbullet.x, pbullet.y, '|', COL_PBULLET);
+        if (pbullet.active) plot(pbullet.x, pbullet.y, GLYPH_PBULLET, COL_PBULLET);
         for (int i = 0; i < MAX_EBULLETS; i++)
-            if (ebullets[i].active) plot(ebullets[i].x, ebullets[i].y, ':', COL_EBULLET);
-        plot(px, py, 'A', COL_PLAYER);
+            if (ebullets[i].active) plot(ebullets[i].x, ebullets[i].y, GLYPH_EBULLET, COL_EBULLET);
+        draw_sprite(px, py, SHIP_TOP, SHIP_BOT, COL_PLAYER);
 
         char numbuf[16];
         int x = 2;

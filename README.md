@@ -1,8 +1,11 @@
 # Space Invaders (Terminal, C)
 
 A classic Space Invaders clone that runs directly in a Linux terminal, styled
-as a colored, rounded-border panel in the spirit of `btop`. No external
-libraries required — just a C standard library and POSIX terminal control.
+as a colored, rounded-border panel in the spirit of `btop`. Invaders, the
+player ship, and the guard islands are drawn as small pixel-art sprites using
+half-block characters (▀▄█) to pack two vertical "pixels" into each terminal
+cell. No external libraries required — just a C standard library and POSIX
+terminal control.
 
 ## Build
 
