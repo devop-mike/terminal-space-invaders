@@ -124,11 +124,20 @@ static void cell_center(int gx, int gy, int *px, int *py) {
     *py = (gy - FIELD_TOP) * CELL_PX_H + CELL_PX_H / 2;
 }
 
-/* Encodes fb[][] as a Sixel image into out, returns bytes written. */
+/* Encodes fb[][] as a Sixel image into out, returns bytes written.
+ *
+ * Every band starts with an explicit full-width background fill (register 0)
+ * before layering the other colors on top. Without this, "unset" pixels
+ * leave the *previous* frame's content on screen wherever the new frame
+ * doesn't happen to paint that exact pixel - since invaders drift and
+ * bullets move every tick, that turns into visible trails (a moving
+ * invader's whole path union'd together looks like a solid bar; a bullet's
+ * path looks like a dashed line). Repainting the background every band
+ * guarantees each frame fully replaces the last. */
 static int sixel_encode(char *out) {
     int p = 0;
-    p += sprintf(out + p, "\x1bP0;1;0q");
-    for (int i = 1; i < PAL_COUNT; i++) {
+    p += sprintf(out + p, "\x1bP0;0;0q");
+    for (int i = 0; i < PAL_COUNT; i++) {
         int r = PALETTE_RGB[i][0] * 100 / 255;
         int g = PALETTE_RGB[i][1] * 100 / 255;
         int b = PALETTE_RGB[i][2] * 100 / 255;
@@ -144,6 +153,9 @@ static int sixel_encode(char *out) {
                 if (pal) colmask[pal][x] |= (unsigned char)(1 << yy);
             }
         }
+        p += sprintf(out + p, "#0");
+        for (int x = 0; x < PX_W; x++) out[p++] = (char)(63 + 63);
+        p += sprintf(out + p, "$");
         for (int reg = 1; reg < PAL_COUNT; reg++) {
             int any = 0;
             for (int x = 0; x < PX_W; x++) if (colmask[reg][x]) { any = 1; break; }
@@ -335,8 +347,8 @@ static void shields_draw(Shield shields[SHIELD_COUNT], int max_cells) {
                     int gx = shields[s].x0 + c, gy = shields[s].y0 + r;
                     int cx, cy;
                     cell_center(gx, gy, &cx, &cy);
-                    fb_rect(cx - CELL_PX_W / 2 + 1, cy - CELL_PX_H / 2 + 1,
-                            CELL_PX_W - 2, CELL_PX_H - 2, pal);
+                    fb_rect(cx - CELL_PX_W / 2, cy - CELL_PX_H / 2,
+                            CELL_PX_W, CELL_PX_H, pal);
                 }
     }
 }
