@@ -2,6 +2,7 @@
  * Terminal Space Invaders
  * Controls: a/d or left/right arrows to move, space to shoot, q to quit.
  * No external dependencies - raw termios + ANSI escapes only.
+ * Requires a 256-color terminal for the btop-style panel.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,13 +24,57 @@
 #define MAX_EBULLETS 6
 #define TICK_USEC 50000
 
+#define SHIELD_COUNT 4
+#define SHIELD_W 5
+#define SHIELD_H 3
+
+#define BORDER_COL "\x1b[38;5;51m"
+#define RESET "\x1b[0m"
+
+static const char SHIELD_SHAPE[SHIELD_H][SHIELD_W + 1] = {
+    " ### ",
+    "#####",
+    "## ##",
+};
+
+typedef enum {
+    COL_NONE = 0,
+    COL_INVADER0, COL_INVADER1, COL_INVADER2, COL_INVADER3, COL_INVADER4,
+    COL_PLAYER, COL_PBULLET, COL_EBULLET,
+    COL_SHIELD_OK, COL_SHIELD_DMG, COL_SHIELD_CRIT,
+    COL_LABEL, COL_SCORE_VAL, COL_LIVES_VAL,
+    COL_COUNT
+} ColorCode;
+
+static const char *PALETTE[COL_COUNT] = {
+    [COL_NONE]       = "",
+    [COL_INVADER0]   = "\x1b[38;5;45m",
+    [COL_INVADER1]   = "\x1b[38;5;51m",
+    [COL_INVADER2]   = "\x1b[38;5;46m",
+    [COL_INVADER3]   = "\x1b[38;5;226m",
+    [COL_INVADER4]   = "\x1b[38;5;203m",
+    [COL_PLAYER]     = "\x1b[1;38;5;46m",
+    [COL_PBULLET]    = "\x1b[38;5;226m",
+    [COL_EBULLET]    = "\x1b[1;38;5;196m",
+    [COL_SHIELD_OK]  = "\x1b[38;5;46m",
+    [COL_SHIELD_DMG] = "\x1b[38;5;226m",
+    [COL_SHIELD_CRIT]= "\x1b[38;5;196m",
+    [COL_LABEL]      = "\x1b[38;5;250m",
+    [COL_SCORE_VAL]  = "\x1b[1;38;5;46m",
+    [COL_LIVES_VAL]  = "\x1b[1;38;5;196m",
+};
+
+static const ColorCode INVADER_ROW_COLOR[ROWS] = {
+    COL_INVADER0, COL_INVADER1, COL_INVADER2, COL_INVADER3, COL_INVADER4
+};
+
 static struct termios orig_termios;
 static int raw_mode_active = 0;
 
 static void restore_terminal(void) {
     if (raw_mode_active) {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
-        printf("\x1b[?25h\x1b[0m\n");
+        printf("\x1b[?25h" RESET "\n");
         fflush(stdout);
         raw_mode_active = 0;
     }
@@ -94,10 +139,23 @@ typedef struct {
     int x, y, active;
 } Bullet;
 
-static char grid[H][W];
+typedef struct {
+    int x0, y0;
+    int alive[SHIELD_H][SHIELD_W];
+} Shield;
 
-static void grid_set(int x, int y, char ch) {
-    if (x >= 0 && x < W && y >= 0 && y < H) grid[y][x] = ch;
+static char grid[H][W];
+static unsigned char colorgrid[H][W];
+
+static void plot(int x, int y, char ch, ColorCode col) {
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    grid[y][x] = ch;
+    colorgrid[y][x] = (unsigned char)col;
+}
+
+static int plot_str(int x, int y, const char *s, ColorCode col) {
+    for (; *s; s++, x++) plot(x, y, *s, col);
+    return x;
 }
 
 static void invaders_init(Invaders *inv) {
@@ -144,14 +202,114 @@ static int bottom_alive_row(Invaders *inv, int c) {
     return -1;
 }
 
+static int shield_max_cells(void) {
+    int n = 0;
+    for (int r = 0; r < SHIELD_H; r++)
+        for (int c = 0; c < SHIELD_W; c++)
+            if (SHIELD_SHAPE[r][c] != ' ') n++;
+    return n;
+}
+
+static void shields_init(Shield shields[SHIELD_COUNT], int player_y) {
+    int gap = (W - SHIELD_COUNT * SHIELD_W) / (SHIELD_COUNT + 1);
+    int shield_y = player_y - 5;
+    for (int s = 0; s < SHIELD_COUNT; s++) {
+        shields[s].x0 = gap + s * (SHIELD_W + gap);
+        shields[s].y0 = shield_y;
+        for (int r = 0; r < SHIELD_H; r++)
+            for (int c = 0; c < SHIELD_W; c++)
+                shields[s].alive[r][c] = (SHIELD_SHAPE[r][c] != ' ');
+    }
+}
+
+/* If (x,y) hits a live shield block, destroy it and return 1. */
+static int shield_hit(Shield shields[SHIELD_COUNT], int x, int y) {
+    for (int s = 0; s < SHIELD_COUNT; s++) {
+        int lx = x - shields[s].x0;
+        int ly = y - shields[s].y0;
+        if (lx < 0 || lx >= SHIELD_W || ly < 0 || ly >= SHIELD_H) continue;
+        if (shields[s].alive[ly][lx]) {
+            shields[s].alive[ly][lx] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void shields_draw(Shield shields[SHIELD_COUNT], int max_cells) {
+    for (int s = 0; s < SHIELD_COUNT; s++) {
+        int remaining = 0;
+        for (int r = 0; r < SHIELD_H; r++)
+            for (int c = 0; c < SHIELD_W; c++)
+                if (shields[s].alive[r][c]) remaining++;
+        if (remaining == 0) continue;
+
+        double frac = (double)remaining / max_cells;
+        ColorCode col = (frac > 0.66) ? COL_SHIELD_OK
+                       : (frac > 0.33) ? COL_SHIELD_DMG
+                       : COL_SHIELD_CRIT;
+
+        for (int r = 0; r < SHIELD_H; r++)
+            for (int c = 0; c < SHIELD_W; c++)
+                if (shields[s].alive[r][c])
+                    plot(shields[s].x0 + c, shields[s].y0 + r, '#', col);
+    }
+}
+
+/* Renders the frame into a single buffer and writes it in one call, wrapped
+ * in a btop-style rounded, colored border with the title baked into the
+ * top edge. */
+static void render(int score, int lives) {
+    static char outbuf[65536];
+    int p = 0;
+
+    p += sprintf(outbuf + p, "\x1b[H");
+
+    const char *title = " SPACE INVADERS ";
+    int used = 1 + (int)strlen(title);
+    int dashes = W - used;
+    if (dashes < 0) dashes = 0;
+    p += sprintf(outbuf + p, BORDER_COL "\xe2\x95\xad\xe2\x94\x80" "\x1b[1;38;5;231m%s" BORDER_COL, title);
+    for (int i = 0; i < dashes; i++) p += sprintf(outbuf + p, "\xe2\x94\x80");
+    p += sprintf(outbuf + p, "\xe2\x95\xae" RESET "\n");
+
+    for (int y = 0; y < H; y++) {
+        if (y == 1) {
+            p += sprintf(outbuf + p, BORDER_COL "\xe2\x94\x9c");
+            for (int i = 0; i < W; i++) p += sprintf(outbuf + p, "\xe2\x94\x80");
+            p += sprintf(outbuf + p, "\xe2\x94\xa4" RESET "\n");
+            continue;
+        }
+        p += sprintf(outbuf + p, BORDER_COL "\xe2\x94\x82" RESET);
+        int last_col = -1;
+        for (int x = 0; x < W; x++) {
+            int c = colorgrid[y][x];
+            if (c != last_col) {
+                p += sprintf(outbuf + p, "%s", PALETTE[c]);
+                last_col = c;
+            }
+            outbuf[p++] = grid[y][x];
+        }
+        p += sprintf(outbuf + p, RESET BORDER_COL "\xe2\x94\x82" RESET "\n");
+    }
+
+    p += sprintf(outbuf + p, BORDER_COL "\xe2\x95\xb0");
+    for (int i = 0; i < W; i++) p += sprintf(outbuf + p, "\xe2\x94\x80");
+    p += sprintf(outbuf + p, "\xe2\x95\xaf" RESET "\n");
+
+    (void)score;
+    (void)lives;
+    write(STDOUT_FILENO, outbuf, (size_t)p);
+}
+
 int main(void) {
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-        if (ws.ws_col < W || ws.ws_row < H) {
+        if (ws.ws_col < W + 2 || ws.ws_row < H + 2) {
             fprintf(stderr,
                 "Terminal too small: need at least %dx%d, have %dx%d.\n"
                 "Resize your terminal and try again.\n",
-                W, H, ws.ws_col, ws.ws_row);
+                W + 2, H + 2, ws.ws_col, ws.ws_row);
             return 1;
         }
     }
@@ -166,6 +324,10 @@ int main(void) {
     int py = FIELD_BOTTOM;
     int lives = 3;
     int score = 0;
+
+    Shield shields[SHIELD_COUNT];
+    shields_init(shields, py);
+    int shield_max_cell_count = shield_max_cells();
 
     Bullet pbullet = {0, 0, 0};
     Bullet ebullets[MAX_EBULLETS];
@@ -194,6 +356,7 @@ int main(void) {
         if (pbullet.active) {
             pbullet.y--;
             if (pbullet.y < FIELD_TOP) pbullet.active = 0;
+            else if (shield_hit(shields, pbullet.x, pbullet.y)) pbullet.active = 0;
         }
 
         if (pbullet.active) {
@@ -237,6 +400,7 @@ int main(void) {
             if (!ebullets[i].active) continue;
             ebullets[i].y++;
             if (ebullets[i].y > FIELD_BOTTOM) { ebullets[i].active = 0; continue; }
+            if (shield_hit(shields, ebullets[i].x, ebullets[i].y)) { ebullets[i].active = 0; continue; }
             if (ebullets[i].x == px && ebullets[i].y == py) {
                 ebullets[i].active = 0;
                 lives--;
@@ -248,35 +412,38 @@ int main(void) {
         if (lives <= 0) { running = 0; won = 0; break; }
 
         memset(grid, ' ', sizeof(grid));
+        memset(colorgrid, COL_NONE, sizeof(colorgrid));
+
+        shields_draw(shields, shield_max_cell_count);
         for (int r = 0; r < ROWS; r++)
             for (int c = 0; c < COLS; c++) {
                 int ix, iy;
-                if (invader_pos(r, c, &inv, &ix, &iy)) grid_set(ix, iy, 'W');
+                if (invader_pos(r, c, &inv, &ix, &iy)) plot(ix, iy, 'W', INVADER_ROW_COLOR[r]);
             }
-        if (pbullet.active) grid_set(pbullet.x, pbullet.y, '|');
+        if (pbullet.active) plot(pbullet.x, pbullet.y, '|', COL_PBULLET);
         for (int i = 0; i < MAX_EBULLETS; i++)
-            if (ebullets[i].active) grid_set(ebullets[i].x, ebullets[i].y, ':');
-        grid_set(px, py, 'A');
+            if (ebullets[i].active) plot(ebullets[i].x, ebullets[i].y, ':', COL_EBULLET);
+        plot(px, py, 'A', COL_PLAYER);
 
-        char status[W + 1];
-        int len = snprintf(status, sizeof(status), "Score: %d  Lives: %d", score, lives);
-        for (int i = 0; i < len && i < W; i++) grid[0][i] = status[i];
+        char numbuf[16];
+        int x = 2;
+        x = plot_str(x, 0, "Score: ", COL_LABEL);
+        snprintf(numbuf, sizeof(numbuf), "%d", score);
+        x = plot_str(x, 0, numbuf, COL_SCORE_VAL);
+        x = plot_str(x + 3, 0, "Lives: ", COL_LABEL);
+        snprintf(numbuf, sizeof(numbuf), "%d", lives);
+        plot_str(x, 0, numbuf, COL_LIVES_VAL);
 
-        printf("\x1b[H");
-        for (int y = 0; y < H; y++) {
-            fwrite(grid[y], 1, W, stdout);
-            fputc('\n', stdout);
-        }
-        fflush(stdout);
+        render(score, lives);
 
         tick++;
         usleep(TICK_USEC);
     }
 
     printf("\x1b[H\x1b[2J");
-    if (quit) printf("Bye! Final score: %d\n", score);
-    else if (won) printf("YOU WIN! Final score: %d\n", score);
-    else printf("GAME OVER. Final score: %d\n", score);
+    if (quit) printf(RESET "Bye! Final score: %d\n", score);
+    else if (won) printf("\x1b[1;38;5;46mYOU WIN! Final score: %d" RESET "\n", score);
+    else printf("\x1b[1;38;5;196mGAME OVER. Final score: %d" RESET "\n", score);
     fflush(stdout);
 
     return 0;
