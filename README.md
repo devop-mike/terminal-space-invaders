@@ -25,26 +25,26 @@ lives run out.
 make
 ```
 
-Builds all three versions. `make ver1` / `make ver2` / `make ver3` to build
-just one.
+Builds all three versions. `make classic` / `make pixelart` / `make blit` to
+build just one.
 
 ## Versions
 
-### ver1 — colored panel
+### classic — colored panel
 
-`./ver1` — a `btop`-style rounded, colored border panel with plain
+`./classic` — a `btop`-style rounded, colored border panel with plain
 single-character glyphs (`W` invaders, `A` ship, `#` shields). Requires a
 256-color terminal window at least 62x26.
 
-### ver2 — pixel-art sprites
+### pixelart — half-block sprites
 
-`./ver2` — same panel, but invaders, the ship, and shields are drawn as
+`./pixelart` — same panel, but invaders, the ship, and shields are drawn as
 small sprites using half-block characters (▀▄█) to pack two vertical
-"pixels" into each terminal cell. Same size requirement as ver1.
+"pixels" into each terminal cell. Same size requirement as classic.
 
-### ver3 — blit (Sixel bitmap)
+### blit — Sixel bitmap
 
-`./ver3` — the play field is a real bitmap image, rendered as actual pixel
+`./blit` — the play field is a real bitmap image, rendered as actual pixel
 sprites and blitted into the terminal via the Sixel graphics protocol.
 Requires a **Sixel-capable terminal** (xterm built with Sixel support and
 `-ti vt340`, mlterm, foot, wezterm, or similar — check your terminal's docs).

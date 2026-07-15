@@ -1,18 +1,18 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
 
-all: ver1 ver2 ver3
+all: classic pixelart blit
 
-ver1: ver1.c
-	$(CC) $(CFLAGS) -o ver1 ver1.c
+classic: classic.c
+	$(CC) $(CFLAGS) -o classic classic.c
 
-ver2: ver2.c
-	$(CC) $(CFLAGS) -o ver2 ver2.c
+pixelart: pixelart.c
+	$(CC) $(CFLAGS) -o pixelart pixelart.c
 
-ver3: ver3.c
-	$(CC) $(CFLAGS) -o ver3 ver3.c
+blit: blit.c
+	$(CC) $(CFLAGS) -o blit blit.c
 
 clean:
-	rm -f ver1 ver2 ver3
+	rm -f classic pixelart blit
 
 .PHONY: all clean
